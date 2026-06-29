@@ -96,7 +96,7 @@ python -m pytest tests/test_gui_threading.py -v
 
 1. **等待网络恢复** → 网络连接稳定后执行:
    ```bash
-   cd ~/android-adb-backup-desktop
+   cd ~/android-adb-backup-wifi
    unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
    git push origin main
    ```
@@ -141,7 +141,7 @@ python -m pytest tests/test_gui_threading.py -v
 
 查看修复代码:
 ```bash
-cd ~/android-adb-backup-desktop
+cd ~/android-adb-backup-wifi
 git log -1 --stat 68c57ae
 git show 68c57ae | head -100
 ```

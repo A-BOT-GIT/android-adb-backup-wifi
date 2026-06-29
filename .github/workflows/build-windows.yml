@@ -25,17 +25,17 @@ jobs:
     
     - name: Build with PyInstaller
       run: |
-        python -m PyInstaller --noconfirm --clean AndroidBackupDesktop.spec
+        python -m PyInstaller --noconfirm --clean AndroidAdbBackupWiFi.spec
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: AndroidBackupDesktop-Windows
-        path: dist/AndroidBackupDesktop/
+        name: AndroidAdbBackupWiFi-Windows
+        path: dist/AndroidAdbBackupWiFi/
         retention-days: 30
     
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
-        files: dist/AndroidBackupDesktop/**/*
+        files: dist/AndroidAdbBackupWiFi/**/*

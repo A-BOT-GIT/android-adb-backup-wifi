@@ -1,4 +1,4 @@
-# 安卓 ADB 备份工具 - 项目完成总结
+# 安卓 ADB 备份工具 WiFi版 - 项目完成总结
 
 **项目完成日期：** 2026年6月28日  
 **最终状态：** ✅ 生产就绪
@@ -9,7 +9,7 @@
 
 Windows桌面应用，用于通过ADB备份和恢复Android设备上的应用（APK、OBB、应用数据）。
 
-**GitHub:** https://github.com/A-BOT-GIT/android-adb-backup-desktop
+**GitHub:** https://github.com/A-BOT-GIT/android-adb-backup-wifi
 
 ---
 
@@ -135,8 +135,8 @@ Windows桌面应用，用于通过ADB备份和恢复Android设备上的应用（
 
 ```bash
 # 克隆项目
-git clone https://github.com/A-BOT-GIT/android-adb-backup-desktop.git
-cd android-adb-backup-desktop
+git clone https://github.com/A-BOT-GIT/android-adb-backup-wifi.git
+cd android-adb-backup-wifi
 
 # 创建虚拟环境
 python -m venv .venv
@@ -153,8 +153,8 @@ android-backup-desktop
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconfirm AndroidBackupDesktop.spec
-# 输出: dist/AndroidBackupDesktop/AndroidBackupDesktop.exe
+pyinstaller --noconfirm AndroidAdbBackupWiFi.spec
+# 输出: dist/AndroidAdbBackupWiFi/AndroidAdbBackupWiFi.exe
 ```
 
 ---
@@ -181,7 +181,7 @@ pyinstaller --noconfirm AndroidBackupDesktop.spec
 
 ## 📌 项目链接
 
-- **GitHub:** https://github.com/A-BOT-GIT/android-adb-backup-desktop
+- **GitHub:** https://github.com/A-BOT-GIT/android-adb-backup-wifi
 - **主分支：** main
 - **最新Commit：** 17e25c7
 
