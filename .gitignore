@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+build_artifacts/
+dist/
+*.egg-info/
+*.spec
+!AndroidBackupDesktop.spec
+AndroidBackups/
+*.zip
+backup.log
+
+# build outputs
+*.pyc
+# virtual env
+# python cache
+# local agent/tool state
+.serena/
+.worktrees/
+.polly/
+# PyInstaller local build output
+AndroidBackupDesktop.exe
+_internal/
