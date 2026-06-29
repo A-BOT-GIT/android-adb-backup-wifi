@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import sys
+from io import BytesIO
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -27,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import APP_NAME, __version__, app_title
-from .adb import AdbClient, AdbError
+from .adb import AdbClient, AdbError, create_adb_qr_pairing_session
 from .backup import BackupService, OperationCancelled
 from .models import AppInfo, BackupOptions, Device
 
@@ -105,6 +108,87 @@ class AdbSmartUsbConnectWorker(QObject):
             self.finished.emit(target, message or f"已连接：{target}")
         except Exception as exc:
             self.failed.emit(str(exc) or "USB 转 Wi‑Fi 连接失败。")
+
+
+class AdbQrPairWorker(QObject):
+    finished = Signal(str, str)
+    failed = Signal(str)
+    cancelled = Signal()
+    log = Signal(str)
+
+    def __init__(self, adb_path: str, service_name: str, password: str) -> None:
+        super().__init__()
+        self.adb_path = adb_path
+        self.service_name = service_name
+        self.password = password
+        self.cancel_requested = False
+
+    def request_cancel(self) -> None:
+        self.cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            adb = AdbClient(self.adb_path)
+            host_port, message = adb.pair_via_qr(
+                self.service_name,
+                self.password,
+                log=self.log.emit,
+                should_cancel=lambda: self.cancel_requested,
+            )
+            if self.cancel_requested:
+                self.cancelled.emit()
+                return
+            self.finished.emit(host_port, message or "二维码配对完成。")
+        except Exception as exc:
+            text = str(exc) or "二维码配对失败。"
+            if self.cancel_requested and "取消" in text:
+                self.cancelled.emit()
+                return
+            self.failed.emit(text)
+
+
+class QrPairDialog(QDialog):
+    def __init__(self, parent: QWidget | None, qr_data: str, service_name: str, password: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"{app_title()} - 二维码配对")
+        self.setModal(True)
+        self.resize(420, 520)
+
+        layout = QVBoxLayout(self)
+        title = QLabel("请在手机的“无线调试 -> 使用二维码配对设备”中扫描下方二维码。")
+        title.setWordWrap(True)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setPixmap(self._build_qr_pixmap(qr_data))
+        self.info_label = QLabel(f"配对名：{service_name}\n配对码：{password}")
+        self.info_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.status_label = QLabel("等待手机扫码...")
+        self.status_label.setWordWrap(True)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.clicked.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addWidget(self.image_label, 1)
+        layout.addWidget(self.info_label)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.cancel_button)
+
+    def set_status(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    @staticmethod
+    def _build_qr_pixmap(qr_data: str) -> QPixmap:
+        try:
+            import qrcode  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("缺少 qrcode 依赖，无法显示二维码。") from exc
+
+        image = qrcode.make(qr_data)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        pixmap = QPixmap()
+        pixmap.loadFromData(buffer.getvalue(), "PNG")
+        return pixmap.scaled(320, 320, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
 
 class AdbDisconnectWorker(QObject):
@@ -284,6 +368,7 @@ class MainWindow(QMainWindow):
         self.metadata_thread: QThread | None = None
         self.active_worker: QObject | None = None
         self.pending_device_serial = ""
+        self.qr_pair_dialog: QrPairDialog | None = None
 
         self.adb_path = QLineEdit("adb")
         self.adb_path.setPlaceholderText("adb 或 adb.exe 的完整路径")
@@ -297,6 +382,7 @@ class MainWindow(QMainWindow):
         self.connect_target = QLineEdit()
         self.connect_target.setPlaceholderText("192.168.1.100:5555")
         self.pair_button = QPushButton("配对")
+        self.qr_pair_button = QPushButton("二维码配对")
         self.connect_button = QPushButton("智能连接")
         self.disconnect_current_button = QPushButton("断开当前 Wi‑Fi")
         self.disconnect_all_button = QPushButton("断开全部 Wi‑Fi")
@@ -363,6 +449,7 @@ class MainWindow(QMainWindow):
         wifi_layout.addWidget(QLabel("配对码"), 0, 2)
         wifi_layout.addWidget(self.pairing_code, 0, 3)
         wifi_layout.addWidget(self.pair_button, 0, 4)
+        wifi_layout.addWidget(self.qr_pair_button, 0, 5)
         wifi_layout.addWidget(QLabel("连接地址"), 1, 0)
         wifi_layout.addWidget(self.connect_target, 1, 1, 1, 2)
         wifi_layout.addWidget(self.connect_button, 1, 3)
@@ -405,6 +492,7 @@ class MainWindow(QMainWindow):
         self.browse_adb_button.clicked.connect(self.browse_adb)
         self.refresh_devices_button.clicked.connect(self.refresh_devices)
         self.pair_button.clicked.connect(self.start_pair)
+        self.qr_pair_button.clicked.connect(self.start_qr_pair)
         self.connect_button.clicked.connect(self.start_connect)
         self.disconnect_current_button.clicked.connect(self.start_disconnect_current)
         self.disconnect_all_button.clicked.connect(self.start_disconnect_all)
@@ -444,12 +532,59 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self.on_worker_failed)
         self.begin_worker()
 
+    def start_qr_pair(self) -> None:
+        try:
+            service_name, password, qr_text = create_adb_qr_pairing_session()
+            dialog = QrPairDialog(self, qr_text, service_name, password)
+        except Exception as exc:
+            self.show_error(str(exc) or "无法生成二维码配对。")
+            return
+
+        self.qr_pair_dialog = dialog
+        self.set_busy(True, "等待二维码配对...")
+        worker = AdbQrPairWorker(self.adb_path.text().strip() or "adb", service_name, password)
+        if not self.start_worker(worker, worker.run):
+            self.qr_pair_dialog = None
+            return
+        worker.log.connect(self.log)
+        worker.log.connect(dialog.set_status)
+        worker.finished.connect(self.on_qr_pair_finished)
+        worker.failed.connect(self.on_qr_pair_failed)
+        worker.cancelled.connect(self.on_qr_pair_cancelled)
+        dialog.rejected.connect(self.cancel_current_operation)
+        dialog.show()
+        self.begin_worker()
+
     def on_pair_finished(self, message: str) -> None:
         self.set_busy(False, "Wi‑Fi 配对完成。")
         self.log(message)
         host = self.pair_host_port.text().strip().split(":", 1)[0]
         if host and not self.connect_target.text().strip():
             self.connect_target.setText(f"{host}:5555")
+
+    def on_qr_pair_finished(self, host_port: str, message: str) -> None:
+        if self.qr_pair_dialog is not None:
+            self.qr_pair_dialog.accept()
+            self.qr_pair_dialog = None
+        self.set_busy(False, "二维码配对完成。")
+        if host_port:
+            self.pending_device_serial = host_port
+            self.connect_target.setText(host_port)
+        self.log(message)
+        self.refresh_devices()
+
+    def on_qr_pair_failed(self, message: str) -> None:
+        if self.qr_pair_dialog is not None:
+            self.qr_pair_dialog.reject()
+            self.qr_pair_dialog = None
+        self.on_worker_failed(message)
+
+    def on_qr_pair_cancelled(self) -> None:
+        if self.qr_pair_dialog is not None:
+            self.qr_pair_dialog.reject()
+            self.qr_pair_dialog = None
+        self.set_busy(False, "二维码配对已取消。")
+        self.log("二维码配对已取消。")
 
     def start_connect(self) -> None:
         host_port = AdbClient.normalize_host_port(self.connect_target.text(), default_port=5555)
@@ -804,6 +939,7 @@ class MainWindow(QMainWindow):
         for widget in [
             self.refresh_devices_button,
             self.pair_button,
+            self.qr_pair_button,
             self.connect_button,
             self.disconnect_current_button,
             self.disconnect_all_button,

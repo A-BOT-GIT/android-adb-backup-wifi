@@ -556,6 +556,59 @@ def test_wifi_connect_can_promote_usb_device_to_wifi(monkeypatch: pytest.MonkeyP
     window.close()
 
 
+def test_qr_pair_controls_dispatch_background_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    import android_backup_desktop.gui as gui_module
+    from android_backup_desktop.gui import AdbQrPairWorker, MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(MainWindow, "refresh_devices", lambda _self: None)
+    monkeypatch.setattr(gui_module, "create_adb_qr_pairing_session", lambda: ("adb-demo", "123456", "WIFI:T:ADB;S:adb-demo;P:123456;;"))
+
+    def fake_start_worker(self: MainWindow, worker, run_slot) -> bool:
+        captured["worker"] = worker
+        captured["run_slot"] = run_slot
+        return True
+
+    monkeypatch.setattr(MainWindow, "start_worker", fake_start_worker)
+    window = MainWindow()
+    window.start_qr_pair()
+
+    assert isinstance(captured["worker"], AdbQrPairWorker)
+    assert captured["worker"].service_name == "adb-demo"
+    assert captured["worker"].password == "123456"
+    assert captured["run_slot"] == captured["worker"].run
+    assert window.qr_pair_dialog is not None
+    window.qr_pair_dialog.close()
+    window.close()
+
+
+def test_qr_pair_finish_updates_connect_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    import android_backup_desktop.gui as gui_module
+    from android_backup_desktop.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "refresh_devices", lambda _self: None)
+    monkeypatch.setattr(gui_module, "create_adb_qr_pairing_session", lambda: ("adb-demo", "123456", "WIFI:T:ADB;S:adb-demo;P:123456;;"))
+    monkeypatch.setattr(MainWindow, "start_worker", lambda *_args: False)
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.start_qr_pair()
+    window.on_qr_pair_finished("192.168.1.10:4321", "paired")
+
+    assert window.connect_target.text() == "192.168.1.10:4321"
+    assert window.pending_device_serial == "192.168.1.10:4321"
+    window.close()
+
+
 def test_device_display_name_marks_wifi_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")

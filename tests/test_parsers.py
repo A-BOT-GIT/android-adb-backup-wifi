@@ -1,6 +1,7 @@
 from android_backup_desktop.adb import (
     AdbClient,
     common_hotspot_addresses,
+    create_adb_qr_pairing_session,
     extract_host_port,
     parse_inet_addresses,
     parse_ipv4_candidates,
@@ -142,3 +143,12 @@ def test_parse_ipv4_candidates_reads_addresses_from_generic_system_output() -> N
 
 def test_common_hotspot_addresses_prioritize_typical_android_gateways() -> None:
     assert common_hotspot_addresses()[:3] == ["192.168.42.129", "192.168.43.1", "192.168.44.1"]
+
+
+def test_create_adb_qr_pairing_session_uses_android_adb_qr_format() -> None:
+    service_name, password, qr_text = create_adb_qr_pairing_session()
+
+    assert service_name.startswith("adb-")
+    assert len(password) == 6
+    assert password.isdigit()
+    assert qr_text == f"WIFI:T:ADB;S:{service_name};P:{password};;"

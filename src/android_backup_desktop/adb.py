@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
+import secrets
 from pathlib import Path
 from typing import Callable
 
@@ -25,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 class AdbError(RuntimeError):
+    pass
+
+
+class AdbQrPairingError(AdbError):
     pass
 
 
@@ -241,6 +246,13 @@ def common_hotspot_addresses() -> list[str]:
         "172.20.10.1",
         "192.168.137.1",
     ]
+
+
+def create_adb_qr_pairing_session() -> tuple[str, str, str]:
+    service_name = f"adb-{secrets.token_hex(4)}"
+    password = "".join(secrets.choice("0123456789") for _ in range(6))
+    qr_text = f"WIFI:T:ADB;S:{service_name};P:{password};;"
+    return service_name, password, qr_text
 
 
 def _localized_apk_label(apk, fallback_label: str) -> str:
@@ -713,6 +725,137 @@ class AdbClient:
         detail = f"；最后一次错误：{last_error}" if last_error else ""
         candidates = "、".join(f"{address}:{port}" for address in addresses)
         raise AdbError(f"已尝试这些地址，但都连接失败：{candidates}{detail}")
+
+    @staticmethod
+    def _mdns_service_addresses(info) -> list[str]:
+        addresses: list[str] = []
+        parsed_addresses = getattr(info, "parsed_addresses", None)
+        if callable(parsed_addresses):
+            try:
+                addresses.extend(str(address) for address in parsed_addresses())
+            except Exception:
+                pass
+        for raw in getattr(info, "addresses", []) or []:
+            try:
+                addresses.append(str(ipaddress.ip_address(raw)))
+            except Exception:
+                continue
+        return sort_connection_candidate_addresses(addresses)
+
+    def pair_via_qr(
+        self,
+        service_name: str,
+        password: str,
+        *,
+        timeout: int = 90,
+        log: Callable[[str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> tuple[str, str]:
+        try:
+            from zeroconf import ServiceBrowser, ServiceListener, Zeroconf  # type: ignore
+        except Exception as exc:
+            raise AdbQrPairingError("缺少 zeroconf 依赖，无法使用二维码配对。") from exc
+
+        pairing_type = "_adb-tls-pairing._tcp.local."
+        connect_type = "_adb-tls-connect._tcp.local."
+        deadline = time.monotonic() + timeout
+        pair_event = threading.Event()
+        connect_event = threading.Event()
+        pair_info_holder: dict[str, object] = {}
+        connect_info_holder: dict[str, object] = {}
+        expected_prefix = f"{service_name}.{pairing_type}"
+
+        class PairListener(ServiceListener):
+            def add_service(self, zc, service_type, name) -> None:
+                if name != expected_prefix:
+                    return
+                info = zc.get_service_info(service_type, name, timeout=3000)
+                if info is not None:
+                    pair_info_holder["info"] = info
+                    pair_event.set()
+
+            def update_service(self, zc, service_type, name) -> None:
+                self.add_service(zc, service_type, name)
+
+            def remove_service(self, zc, service_type, name) -> None:
+                return
+
+        class ConnectListener(ServiceListener):
+            def add_service(self, zc, service_type, name) -> None:
+                info = zc.get_service_info(service_type, name, timeout=3000)
+                if info is None:
+                    return
+                if pair_info_holder.get("info") is not None:
+                    pair_addresses = AdbClient._mdns_service_addresses(pair_info_holder["info"])
+                    connect_addresses = AdbClient._mdns_service_addresses(info)
+                    if pair_addresses and connect_addresses and not set(pair_addresses).intersection(connect_addresses):
+                        return
+                connect_info_holder["info"] = info
+                connect_event.set()
+
+            def update_service(self, zc, service_type, name) -> None:
+                self.add_service(zc, service_type, name)
+
+            def remove_service(self, zc, service_type, name) -> None:
+                return
+
+        zeroconf = Zeroconf()
+        pair_browser = ServiceBrowser(zeroconf, pairing_type, PairListener())
+        connect_browser = None
+        try:
+            if log:
+                log(f"等待手机扫码并广播配对服务：{service_name}")
+            while not pair_event.wait(0.2):
+                if should_cancel and should_cancel():
+                    raise AdbQrPairingError("二维码配对已取消。")
+                if time.monotonic() >= deadline:
+                    raise AdbQrPairingError("等待手机扫码超时。请在手机上选择“使用二维码配对设备”后重新扫码。")
+
+            pair_info = pair_info_holder["info"]
+            pair_addresses = self._mdns_service_addresses(pair_info)
+            pair_port = getattr(pair_info, "port", 0)
+            if not pair_addresses or not pair_port:
+                raise AdbQrPairingError("已收到二维码配对请求，但未解析到有效的配对地址。")
+            pair_host_port = f"{pair_addresses[0]}:{pair_port}"
+            if log:
+                log(f"扫码成功，发现配对服务：{pair_host_port}")
+            pair_message = self.pair(pair_host_port, password)
+            if log and pair_message:
+                log(pair_message)
+
+            connect_browser = ServiceBrowser(zeroconf, connect_type, ConnectListener())
+            connect_deadline = min(deadline, time.monotonic() + 20)
+            while not connect_event.wait(0.2):
+                if should_cancel and should_cancel():
+                    raise AdbQrPairingError("二维码配对已取消。")
+                if time.monotonic() >= connect_deadline:
+                    return "", pair_message or "二维码配对完成。"
+
+            connect_info = connect_info_holder["info"]
+            connect_addresses = self._mdns_service_addresses(connect_info)
+            connect_port = getattr(connect_info, "port", 0)
+            if not connect_addresses or not connect_port:
+                return "", pair_message or "二维码配对完成。"
+            connect_host_port = f"{connect_addresses[0]}:{connect_port}"
+            if log:
+                log(f"发现无线调试连接服务：{connect_host_port}")
+                log(f"尝试连接：adb connect {connect_host_port}")
+            connect_message = self.connect(connect_host_port)
+            if log and connect_message:
+                log(connect_message)
+            combined = "\n".join(part for part in (pair_message, connect_message) if part)
+            return connect_host_port, combined or f"已连接：{connect_host_port}"
+        finally:
+            try:
+                if connect_browser is not None:
+                    connect_browser.cancel()
+            except Exception:
+                pass
+            try:
+                pair_browser.cancel()
+            except Exception:
+                pass
+            zeroconf.close()
 
     def _run_global(
         self,
