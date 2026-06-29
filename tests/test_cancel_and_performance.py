@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from android_backup_desktop import __version__, app_title
 from android_backup_desktop.adb import AdbError, LONG_ADB_OPERATION_TIMEOUT, AdbClient
 from android_backup_desktop.backup import BackupService, OperationCancelled
 from android_backup_desktop.models import AppInfo, BackupOptions, Device
@@ -425,6 +426,22 @@ def test_device_refresh_is_dispatched_to_background_worker(monkeypatch: pytest.M
 
     assert isinstance(captured["worker"], DeviceLoadWorker)
     assert captured["run_slot"] == captured["worker"].run
+    window.close()
+
+
+def test_main_window_title_and_startup_log_include_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from android_backup_desktop.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "refresh_devices", lambda _self: None)
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    assert window.windowTitle() == app_title()
+    assert f"v{__version__}" in window.log_view.toPlainText()
     window.close()
 
 

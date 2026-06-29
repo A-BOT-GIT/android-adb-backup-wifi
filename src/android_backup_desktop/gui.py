@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import APP_NAME, __version__, app_title
 from .adb import AdbClient, AdbError
 from .backup import BackupService, OperationCancelled
 from .models import AppInfo, BackupOptions, Device
@@ -274,7 +275,7 @@ class RestoreWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("安卓 ADB 备份工具 WiFi版")
+        self.setWindowTitle(app_title())
         self.resize(1080, 720)
 
         self.devices: list[Device] = []
@@ -338,6 +339,7 @@ class MainWindow(QMainWindow):
 
         self._build_layout()
         self._connect_signals()
+        self.log(f"{APP_NAME} v{__version__}")
         self.refresh_devices()
 
     def _build_layout(self) -> None:
@@ -828,7 +830,7 @@ class MainWindow(QMainWindow):
 
     def show_error(self, message: str) -> None:
         self.log(message)
-        QMessageBox.critical(self, "安卓 ADB 备份工具 WiFi版", message)
+        QMessageBox.critical(self, self.windowTitle(), message)
 
 
 def run_app() -> int:
