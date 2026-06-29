@@ -2,6 +2,7 @@ from android_backup_desktop.adb import (
     AdbClient,
     extract_host_port,
     parse_inet_addresses,
+    parse_ipv4_candidates,
     parse_devices,
     parse_dumpsys_package,
     parse_package_lines,
@@ -125,3 +126,14 @@ def test_sort_connection_candidate_addresses_prefers_private_lan_addresses() -> 
         "10.24.8.1",
         "100.93.12.4",
     ]
+
+
+def test_parse_ipv4_candidates_reads_addresses_from_generic_system_output() -> None:
+    output = """
+    [dhcp.ap0.ipaddress]: [192.168.232.1]
+    wlan0    UP  10.10.0.23/24
+    rmnet0   UP  100.82.15.4/29
+    lo       UP  127.0.0.1/8
+    """
+
+    assert parse_ipv4_candidates(output) == ["192.168.232.1", "10.10.0.23", "100.82.15.4"]

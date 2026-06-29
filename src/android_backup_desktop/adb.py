@@ -192,6 +192,21 @@ def parse_inet_addresses(output: str) -> list[str]:
     return list(dict.fromkeys(addresses))
 
 
+def parse_ipv4_candidates(output: str) -> list[str]:
+    addresses: list[str] = []
+    for match in re.finditer(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", output or ""):
+        candidate = match.group(1)
+        if candidate.startswith("127.") or candidate == "0.0.0.0":
+            continue
+        try:
+            ip = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if isinstance(ip, ipaddress.IPv4Address):
+            addresses.append(candidate)
+    return list(dict.fromkeys(addresses))
+
+
 def sort_connection_candidate_addresses(addresses: list[str]) -> list[str]:
     def score(address: str) -> tuple[int, int, str]:
         try:
@@ -593,15 +608,24 @@ class AdbClient:
             ("ip", "-f", "inet", "addr", "show", "swlan0"),
             ("ip", "-f", "inet", "addr", "show", "wifi0"),
             ("ip", "-f", "inet", "addr", "show"),
+            ("ip", "addr", "show"),
+            ("ip", "route"),
             ("ifconfig", "wlan0"),
             ("ifconfig", "ap0"),
             ("ifconfig", "swlan0"),
             ("ifconfig",),
+            ("netcfg",),
+            ("hostname", "-I"),
+            ("cmd", "wifi", "status"),
+            ("dumpsys", "wifi"),
+            ("dumpsys", "connectivity"),
         ]
         addresses: list[str] = []
         for command in commands:
             output = self.shell(*command, timeout=15, check=False)
             for address in parse_inet_addresses(output):
+                addresses.append(address)
+            for address in parse_ipv4_candidates(output):
                 addresses.append(address)
 
         for prop_name in (
@@ -614,6 +638,10 @@ class AdbClient:
             value = self.shell("getprop", prop_name, timeout=10, check=False).strip()
             if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value) and not value.startswith("127."):
                 addresses.append(value)
+
+        all_props = self.shell("getprop", timeout=15, check=False)
+        for address in parse_ipv4_candidates(all_props):
+            addresses.append(address)
         return sort_connection_candidate_addresses(addresses)
 
     def prepare_usb_device_for_wifi(self, port: int = 5555) -> tuple[str, str]:
