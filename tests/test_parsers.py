@@ -7,6 +7,7 @@ from android_backup_desktop.adb import (
     parse_package_lines,
     parse_pm_path_lines,
     resolve_adb_path,
+    sort_connection_candidate_addresses,
 )
 import android_backup_desktop.adb as adb_module
 
@@ -113,3 +114,14 @@ def test_parse_inet_addresses_ignores_loopback_and_deduplicates() -> None:
     """
 
     assert parse_inet_addresses(output) == ["192.168.1.23"]
+
+
+def test_sort_connection_candidate_addresses_prefers_private_lan_addresses() -> None:
+    addresses = ["100.93.12.4", "10.24.8.1", "172.20.10.1", "192.168.43.1"]
+
+    assert sort_connection_candidate_addresses(addresses) == [
+        "192.168.43.1",
+        "172.20.10.1",
+        "10.24.8.1",
+        "100.93.12.4",
+    ]

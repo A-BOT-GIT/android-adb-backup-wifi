@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from android_backup_desktop.adb import LONG_ADB_OPERATION_TIMEOUT, AdbClient
+from android_backup_desktop.adb import AdbError, LONG_ADB_OPERATION_TIMEOUT, AdbClient
 from android_backup_desktop.backup import BackupService, OperationCancelled
 from android_backup_desktop.models import AppInfo, BackupOptions, Device
 
@@ -265,6 +265,30 @@ def test_prepare_usb_device_for_wifi_switches_tcpip_and_connects(monkeypatch: py
     assert target == "192.168.1.20:5555"
     assert "TCP mode" in message
     assert "connected to 192.168.1.20:5555" in message
+
+
+def test_prepare_usb_device_for_wifi_retries_next_address_when_first_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = AdbClient.__new__(AdbClient)
+    client.adb_path = Path("adb")
+    client.serial = "USB123"
+    calls: list[str] = []
+
+    monkeypatch.setattr(AdbClient, "tcpip", lambda self, port=5555: f"restarting in TCP mode port: {port}")
+    monkeypatch.setattr(AdbClient, "device_wifi_addresses", lambda self: ["100.100.12.4", "192.168.43.1"])
+
+    def fake_connect(self, host_port: str) -> str:
+        calls.append(host_port)
+        if host_port == "100.100.12.4:5555":
+            raise AdbError("cannot connect")
+        return f"connected to {host_port}"
+
+    monkeypatch.setattr(AdbClient, "connect", fake_connect)
+
+    target, message = client.prepare_usb_device_for_wifi()
+
+    assert calls == ["100.100.12.4:5555", "192.168.43.1:5555"]
+    assert target == "192.168.43.1:5555"
+    assert "connected to 192.168.43.1:5555" in message
 
 
 def test_adb_pair_sends_pairing_code_via_stdin(monkeypatch: pytest.MonkeyPatch) -> None:

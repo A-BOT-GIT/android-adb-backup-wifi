@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import inspect
+import ipaddress
 import logging
 import re
 import shlex
@@ -189,6 +190,30 @@ def parse_inet_addresses(output: str) -> list[str]:
         if not candidate.startswith("127."):
             addresses.append(candidate)
     return list(dict.fromkeys(addresses))
+
+
+def sort_connection_candidate_addresses(addresses: list[str]) -> list[str]:
+    def score(address: str) -> tuple[int, int, str]:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            return (4, 0, address)
+
+        if not isinstance(ip, ipaddress.IPv4Address):
+            return (3, 0, address)
+
+        text = str(ip)
+        if text.startswith("192.168."):
+            return (0, 0, text)
+        if text.startswith("172."):
+            return (1, 0, text)
+        if text.startswith("10."):
+            return (2, 0, text)
+        if ip.is_private:
+            return (2, 1, text)
+        return (3, 0, text)
+
+    return sorted(dict.fromkeys(addresses), key=score)
 
 
 def _localized_apk_label(apk, fallback_label: str) -> str:
@@ -564,8 +589,14 @@ class AdbClient:
     def device_wifi_addresses(self) -> list[str]:
         commands = [
             ("ip", "-f", "inet", "addr", "show", "wlan0"),
+            ("ip", "-f", "inet", "addr", "show", "ap0"),
+            ("ip", "-f", "inet", "addr", "show", "swlan0"),
+            ("ip", "-f", "inet", "addr", "show", "wifi0"),
             ("ip", "-f", "inet", "addr", "show"),
             ("ifconfig", "wlan0"),
+            ("ifconfig", "ap0"),
+            ("ifconfig", "swlan0"),
+            ("ifconfig",),
         ]
         addresses: list[str] = []
         for command in commands:
@@ -573,11 +604,17 @@ class AdbClient:
             for address in parse_inet_addresses(output):
                 addresses.append(address)
 
-        for prop_name in ("dhcp.wlan0.ipaddress", "dhcp.eth0.ipaddress", "dhcp.wlan.ipaddress"):
+        for prop_name in (
+            "dhcp.wlan0.ipaddress",
+            "dhcp.ap0.ipaddress",
+            "dhcp.swlan0.ipaddress",
+            "dhcp.eth0.ipaddress",
+            "dhcp.wlan.ipaddress",
+        ):
             value = self.shell("getprop", prop_name, timeout=10, check=False).strip()
             if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value) and not value.startswith("127."):
                 addresses.append(value)
-        return list(dict.fromkeys(addresses))
+        return sort_connection_candidate_addresses(addresses)
 
     def prepare_usb_device_for_wifi(self, port: int = 5555) -> tuple[str, str]:
         if not self.serial:
@@ -588,13 +625,23 @@ class AdbClient:
         tcpip_message = self.tcpip(port)
         addresses = self.device_wifi_addresses()
         if not addresses:
-            raise AdbError("已切换到 TCP/IP 模式，但未探测到设备 Wi‑Fi IP。请确认手机与电脑在同一局域网。")
+            raise AdbError("已切换到 TCP/IP 模式，但未探测到可用地址。请确认手机热点或无线网络已启用。")
 
-        target = f"{addresses[0]}:{port}"
-        connect_message = self.connect(target)
-        message_parts = [part for part in (tcpip_message, connect_message) if part]
-        message = "\n".join(message_parts) if message_parts else f"已连接：{target}"
-        return target, message
+        last_error = ""
+        for address in addresses:
+            target = f"{address}:{port}"
+            try:
+                connect_message = self.connect(target)
+                message_parts = [part for part in (tcpip_message, connect_message) if part]
+                message = "\n".join(message_parts) if message_parts else f"已连接：{target}"
+                return target, message
+            except AdbError as exc:
+                last_error = str(exc) or last_error
+                logger.warning("Failed to connect to candidate adb wifi address: %s error=%s", target, last_error)
+
+        detail = f"；最后一次错误：{last_error}" if last_error else ""
+        candidates = "、".join(f"{address}:{port}" for address in addresses)
+        raise AdbError(f"已探测到这些地址，但都连接失败：{candidates}{detail}")
 
     def _run_global(
         self,
