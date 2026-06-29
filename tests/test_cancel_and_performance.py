@@ -292,6 +292,32 @@ def test_prepare_usb_device_for_wifi_retries_next_address_when_first_fails(monke
     assert "connected to 192.168.43.1:5555" in message
 
 
+def test_prepare_usb_device_for_wifi_uses_hotspot_fallback_addresses_when_detection_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = AdbClient.__new__(AdbClient)
+    client.adb_path = Path("adb")
+    client.serial = "USB123"
+    calls: list[str] = []
+    logs: list[str] = []
+
+    monkeypatch.setattr(AdbClient, "tcpip", lambda self, port=5555: f"restarting in TCP mode port: {port}")
+    monkeypatch.setattr(AdbClient, "device_wifi_addresses", lambda self, log=None: [])
+
+    def fake_connect(self, host_port: str) -> str:
+        calls.append(host_port)
+        if host_port != "192.168.42.129:5555":
+            raise AdbError("cannot connect")
+        return f"connected to {host_port}"
+
+    monkeypatch.setattr(AdbClient, "connect", fake_connect)
+
+    target, message = client.prepare_usb_device_for_wifi(log=logs.append)
+
+    assert target == "192.168.42.129:5555"
+    assert calls[0] == "192.168.42.129:5555"
+    assert any("改用热点兜底地址" in entry for entry in logs)
+    assert "connected to 192.168.42.129:5555" in message
+
+
 def test_adb_pair_sends_pairing_code_via_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     from android_backup_desktop import adb as adb_module
 

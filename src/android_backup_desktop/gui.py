@@ -101,7 +101,7 @@ class AdbSmartUsbConnectWorker(QObject):
     def run(self) -> None:
         try:
             adb = AdbClient(self.adb_path, self.serial)
-            target, message = adb.prepare_usb_device_for_wifi(self.port)
+            target, message = adb.prepare_usb_device_for_wifi(self.port, log=self.log.emit)
             self.finished.emit(target, message or f"已连接：{target}")
         except Exception as exc:
             self.failed.emit(str(exc) or "USB 转 Wi‑Fi 连接失败。")

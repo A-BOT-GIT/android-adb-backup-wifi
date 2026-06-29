@@ -1,5 +1,6 @@
 from android_backup_desktop.adb import (
     AdbClient,
+    common_hotspot_addresses,
     extract_host_port,
     parse_inet_addresses,
     parse_ipv4_candidates,
@@ -137,3 +138,7 @@ def test_parse_ipv4_candidates_reads_addresses_from_generic_system_output() -> N
     """
 
     assert parse_ipv4_candidates(output) == ["192.168.232.1", "10.10.0.23", "100.82.15.4"]
+
+
+def test_common_hotspot_addresses_prioritize_typical_android_gateways() -> None:
+    assert common_hotspot_addresses()[:3] == ["192.168.42.129", "192.168.43.1", "192.168.44.1"]

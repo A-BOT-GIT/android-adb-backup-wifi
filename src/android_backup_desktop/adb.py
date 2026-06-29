@@ -231,6 +231,18 @@ def sort_connection_candidate_addresses(addresses: list[str]) -> list[str]:
     return sorted(dict.fromkeys(addresses), key=score)
 
 
+def common_hotspot_addresses() -> list[str]:
+    # Common Android hotspot gateway / tethering addresses across vendors.
+    return [
+        "192.168.42.129",
+        "192.168.43.1",
+        "192.168.44.1",
+        "192.168.232.1",
+        "172.20.10.1",
+        "192.168.137.1",
+    ]
+
+
 def _localized_apk_label(apk, fallback_label: str) -> str:
     get_app_name = getattr(apk, "get_app_name", None)
     if not callable(get_app_name):
@@ -601,7 +613,7 @@ class AdbClient:
             raise AdbError(message)
         return (stdout or stderr or "").strip()
 
-    def device_wifi_addresses(self) -> list[str]:
+    def device_wifi_addresses(self, log: Callable[[str], None] | None = None) -> list[str]:
         commands = [
             ("ip", "-f", "inet", "addr", "show", "wlan0"),
             ("ip", "-f", "inet", "addr", "show", "ap0"),
@@ -623,10 +635,15 @@ class AdbClient:
         addresses: list[str] = []
         for command in commands:
             output = self.shell(*command, timeout=15, check=False)
-            for address in parse_inet_addresses(output):
+            found = parse_inet_addresses(output)
+            generic_found = parse_ipv4_candidates(output)
+            for address in found:
                 addresses.append(address)
-            for address in parse_ipv4_candidates(output):
+            for address in generic_found:
                 addresses.append(address)
+            if log and (found or generic_found):
+                discovered = sort_connection_candidate_addresses([*found, *generic_found])
+                log(f"地址探测 {(' '.join(command))} -> {', '.join(discovered)}")
 
         for prop_name in (
             "dhcp.wlan0.ipaddress",
@@ -638,38 +655,64 @@ class AdbClient:
             value = self.shell("getprop", prop_name, timeout=10, check=False).strip()
             if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value) and not value.startswith("127."):
                 addresses.append(value)
+                if log:
+                    log(f"地址探测 getprop {prop_name} -> {value}")
 
         all_props = self.shell("getprop", timeout=15, check=False)
         for address in parse_ipv4_candidates(all_props):
             addresses.append(address)
-        return sort_connection_candidate_addresses(addresses)
+        sorted_addresses = sort_connection_candidate_addresses(addresses)
+        if log:
+            if sorted_addresses:
+                log(f"设备侧候选地址：{', '.join(sorted_addresses)}")
+            else:
+                log("设备侧未探测到任何 IPv4 地址。")
+        return sorted_addresses
 
-    def prepare_usb_device_for_wifi(self, port: int = 5555) -> tuple[str, str]:
+    def prepare_usb_device_for_wifi(
+        self,
+        port: int = 5555,
+        log: Callable[[str], None] | None = None,
+    ) -> tuple[str, str]:
         if not self.serial:
             raise AdbError("需要先选择一台 USB 设备。")
         if self.is_network_serial(self.serial):
             return self.serial, f"设备已通过 Wi‑Fi 连接：{self.serial}"
 
         tcpip_message = self.tcpip(port)
-        addresses = self.device_wifi_addresses()
+        if log and tcpip_message:
+            log(tcpip_message)
+        try:
+            addresses = self.device_wifi_addresses(log=log)
+        except TypeError:
+            addresses = self.device_wifi_addresses()
         if not addresses:
-            raise AdbError("已切换到 TCP/IP 模式，但未探测到可用地址。请确认手机热点或无线网络已启用。")
+            fallback_addresses = common_hotspot_addresses()
+            if log:
+                log(f"改用热点兜底地址：{', '.join(fallback_addresses)}")
+            addresses = fallback_addresses
 
         last_error = ""
         for address in addresses:
             target = f"{address}:{port}"
             try:
+                if log:
+                    log(f"尝试连接：adb connect {target}")
                 connect_message = self.connect(target)
+                if log and connect_message:
+                    log(connect_message)
                 message_parts = [part for part in (tcpip_message, connect_message) if part]
                 message = "\n".join(message_parts) if message_parts else f"已连接：{target}"
                 return target, message
             except AdbError as exc:
                 last_error = str(exc) or last_error
+                if log:
+                    log(f"连接失败：{target} -> {last_error}")
                 logger.warning("Failed to connect to candidate adb wifi address: %s error=%s", target, last_error)
 
         detail = f"；最后一次错误：{last_error}" if last_error else ""
         candidates = "、".join(f"{address}:{port}" for address in addresses)
-        raise AdbError(f"已探测到这些地址，但都连接失败：{candidates}{detail}")
+        raise AdbError(f"已尝试这些地址，但都连接失败：{candidates}{detail}")
 
     def _run_global(
         self,
