@@ -670,12 +670,28 @@ class MainWindow(QMainWindow):
         self.device_combo.clear()
         for device in self.devices:
             self.device_combo.addItem(self.device_display_name(device), device.serial)
-        if current_serial:
-            index = self.device_combo.findData(current_serial)
+        preferred_serial = self._preferred_device_serial(current_serial)
+        if preferred_serial:
+            index = self.device_combo.findData(preferred_serial)
             if index >= 0:
                 self.device_combo.setCurrentIndex(index)
         self.pending_device_serial = ""
         self.set_busy(False, f"找到 {len(self.devices)} 台设备。")
+
+    def _preferred_device_serial(self, desired_serial: str) -> str:
+        if desired_serial:
+            desired_device = self.device_by_serial(desired_serial)
+            if desired_device and desired_device.state == "device":
+                return desired_serial
+
+        wifi_devices = [device for device in self.devices if device.state == "device" and AdbClient.is_network_serial(device.serial)]
+        if wifi_devices:
+            return wifi_devices[0].serial
+
+        usb_devices = [device for device in self.devices if device.state == "device"]
+        if usb_devices:
+            return usb_devices[0].serial
+        return desired_serial
 
     def device_display_name(self, device: Device) -> str:
         is_network_serial = getattr(AdbClient, "is_network_serial", None)
@@ -686,14 +702,13 @@ class MainWindow(QMainWindow):
         return f"{device.serial} [{transport}/{device.state}]"
 
     def load_apps(self) -> None:
-        serial = self.current_serial()
-        if not serial:
-            self.show_error("请先连接并选择一台 ADB 设备。")
+        device = self.current_device(require_ready=True)
+        if device is None:
             return
         self.set_busy(True, "正在加载应用...")
         worker = AppLoadWorker(
             self.adb_path.text().strip() or "adb",
-            serial,
+            device.serial,
             self.include_system.isChecked(),
             self.preload_app_labels.isChecked(),
         )
@@ -740,14 +755,14 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.apps):
             return
         app = self.apps[row]
-        serial = self.current_serial()
-        if not serial or app.metadata_loaded:
+        device = self.current_device(require_ready=True, show_error=False)
+        if device is None or app.metadata_loaded:
             return
         if self.metadata_thread and self.metadata_thread.isRunning():
             return
 
         self.status_label.setText(f"正在读取 {app.package} 的应用信息...")
-        worker = AppMetadataWorker(self.adb_path.text().strip() or "adb", serial, row, app)
+        worker = AppMetadataWorker(self.adb_path.text().strip() or "adb", device.serial, row, app)
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -806,9 +821,8 @@ class MainWindow(QMainWindow):
         return selected
 
     def start_backup(self, all_apps: bool) -> None:
-        serial = self.current_serial()
-        if not serial:
-            self.show_error("请先连接并选择一台 ADB 设备。")
+        device = self.current_device(require_ready=True)
+        if device is None:
             return
         apps = list(self.apps) if all_apps else self.selected_apps()
         if not apps:
@@ -822,7 +836,7 @@ class MainWindow(QMainWindow):
             auto_confirm_adb_backup=self.auto_confirm_adb_backup.isChecked(),
         )
         self.set_busy(True, "正在开始备份...")
-        worker = BackupWorker(self.adb_path.text().strip() or "adb", serial, apps, options)
+        worker = BackupWorker(self.adb_path.text().strip() or "adb", device.serial, apps, options)
         if not self.start_worker(worker, worker.run):
             return
         worker.log.connect(self.log)
@@ -833,9 +847,8 @@ class MainWindow(QMainWindow):
         self.begin_worker()
 
     def start_restore(self) -> None:
-        serial = self.current_serial()
-        if not serial:
-            self.show_error("请先连接并选择一台 ADB 设备。")
+        device = self.current_device(require_ready=True)
+        if device is None:
             return
         file_name, _ = QFileDialog.getOpenFileName(self, "选择备份压缩包", self.output_dir.text(), "压缩包 (*.zip)")
         if not file_name:
@@ -843,7 +856,7 @@ class MainWindow(QMainWindow):
         self.set_busy(True, "正在开始恢复...")
         worker = RestoreWorker(
             self.adb_path.text().strip() or "adb",
-            serial,
+            device.serial,
             Path(file_name),
             self.restore_data.isChecked(),
         )
@@ -960,6 +973,31 @@ class MainWindow(QMainWindow):
 
     def current_serial(self) -> str:
         return str(self.device_combo.currentData() or "")
+
+    def device_by_serial(self, serial: str) -> Device | None:
+        for device in self.devices:
+            if device.serial == serial:
+                return device
+        return None
+
+    def current_device(self, *, require_ready: bool = False, show_error: bool = True) -> Device | None:
+        serial = self.current_serial()
+        if not serial:
+            if show_error:
+                self.show_error("请先连接并选择一台 ADB 设备。")
+            return None
+
+        device = self.device_by_serial(serial)
+        if device is None:
+            if show_error:
+                self.show_error("当前设备列表已变化，请先刷新设备。")
+            return None
+
+        if require_ready and device.state != "device":
+            if show_error:
+                self.show_error(f"当前设备状态为 {device.state}，请改选状态正常的设备。")
+            return None
+        return device
 
     def log(self, message: str) -> None:
         self.log_view.append(message)

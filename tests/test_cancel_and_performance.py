@@ -628,6 +628,49 @@ def test_device_display_name_marks_wifi_transport(monkeypatch: pytest.MonkeyPatc
     window.close()
 
 
+def test_devices_loaded_prefers_ready_wifi_device_over_offline_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from android_backup_desktop.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "refresh_devices", lambda _self: None)
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.pending_device_serial = "USB123"
+    window.on_devices_loaded(
+        [
+            Device(serial="USB123", state="offline", description=""),
+            Device(serial="10.0.0.5:33497", state="device", description=""),
+        ]
+    )
+
+    assert window.current_serial() == "10.0.0.5:33497"
+    window.close()
+
+
+def test_load_apps_rejects_offline_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from android_backup_desktop.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "refresh_devices", lambda _self: None)
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.devices = [Device(serial="USB123", state="offline", description="")]
+    window.device_combo.addItem("USB123 [USB/offline]", "USB123")
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(window, "show_error", lambda message: captured.setdefault("message", message))
+
+    window.load_apps()
+
+    assert "offline" in captured["message"]
+    window.close()
+
+
 def test_load_apps_worker_defaults_to_lazy_metadata_loading() -> None:
     pytest.importorskip("PySide6")
     from android_backup_desktop.gui import AppLoadWorker
