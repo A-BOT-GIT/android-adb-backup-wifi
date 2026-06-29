@@ -33,6 +33,7 @@ LONG_ADB_OPERATION_TIMEOUT = 30 * 60
 BACKUP_CONFIRM_PACKAGES = ("com.android.backupconfirm", "com.google.android.backupconfirm")
 BACKUP_AUTO_CONFIRM_TIMEOUT = 20
 BACKUP_AUTO_CONFIRM_POLL_INTERVAL = 0.75
+HOST_TOKEN_PATTERN = r"(?:\d{1,3}(?:\.\d{1,3}){3}|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
 
 
 def _is_default_adb_path(adb_path: str) -> bool:
@@ -157,6 +158,37 @@ def parse_dumpsys_package(output: str) -> tuple[str, str]:
             version_code = legacy_match.group(1)
 
     return version_name, version_code
+
+
+def extract_host_port(text: str, default_port: int | None = None) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    compact = re.sub(r"[\s\r\n]+", " ", raw)
+    match = re.search(rf"({HOST_TOKEN_PATTERN})\s*:\s*(\d{{2,5}})", compact)
+    if match:
+        return f"{match.group(1)}:{match.group(2)}"
+
+    match = re.search(rf"\b({HOST_TOKEN_PATTERN})\b[\s,;/|]+\b(\d{{2,5}})\b", compact)
+    if match:
+        return f"{match.group(1)}:{match.group(2)}"
+
+    if default_port is not None:
+        host_only = compact.split()[0]
+        host_only = host_only.rstrip(":")
+        if host_only and re.fullmatch(HOST_TOKEN_PATTERN, host_only):
+            return f"{host_only}:{default_port}"
+    return ""
+
+
+def parse_inet_addresses(output: str) -> list[str]:
+    addresses: list[str] = []
+    for match in re.finditer(r"\binet\s+(\d{1,3}(?:\.\d{1,3}){3})\b", output or ""):
+        candidate = match.group(1)
+        if not candidate.startswith("127."):
+            addresses.append(candidate)
+    return list(dict.fromkeys(addresses))
 
 
 def _localized_apk_label(apk, fallback_label: str) -> str:
@@ -296,6 +328,10 @@ class AdbClient:
     def shell(self, *args: str, timeout: int | None = 60, check: bool = True) -> str:
         result = self._run(["shell", *args], timeout=timeout, check=check)
         return result.stdout
+
+    @staticmethod
+    def normalize_host_port(text: str, default_port: int | None = None) -> str:
+        return extract_host_port(text, default_port=default_port)
 
     @staticmethod
     def is_network_serial(serial: str) -> bool:
@@ -470,6 +506,10 @@ class AdbClient:
     def adb_restore(self, backup_file: Path) -> None:
         self._run(["restore", str(backup_file)], timeout=LONG_ADB_OPERATION_TIMEOUT)
 
+    def tcpip(self, port: int = 5555) -> str:
+        result = self._run(["tcpip", str(port)], timeout=30)
+        return (result.stdout or result.stderr or "").strip()
+
     def connect(self, host_port: str) -> str:
         result = self._run_global(["connect", host_port], timeout=30)
         return (result.stdout or result.stderr or "").strip()
@@ -520,6 +560,41 @@ class AdbClient:
             message = (stderr or stdout or "未知 ADB 错误").strip()
             raise AdbError(message)
         return (stdout or stderr or "").strip()
+
+    def device_wifi_addresses(self) -> list[str]:
+        commands = [
+            ("ip", "-f", "inet", "addr", "show", "wlan0"),
+            ("ip", "-f", "inet", "addr", "show"),
+            ("ifconfig", "wlan0"),
+        ]
+        addresses: list[str] = []
+        for command in commands:
+            output = self.shell(*command, timeout=15, check=False)
+            for address in parse_inet_addresses(output):
+                addresses.append(address)
+
+        for prop_name in ("dhcp.wlan0.ipaddress", "dhcp.eth0.ipaddress", "dhcp.wlan.ipaddress"):
+            value = self.shell("getprop", prop_name, timeout=10, check=False).strip()
+            if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value) and not value.startswith("127."):
+                addresses.append(value)
+        return list(dict.fromkeys(addresses))
+
+    def prepare_usb_device_for_wifi(self, port: int = 5555) -> tuple[str, str]:
+        if not self.serial:
+            raise AdbError("需要先选择一台 USB 设备。")
+        if self.is_network_serial(self.serial):
+            return self.serial, f"设备已通过 Wi‑Fi 连接：{self.serial}"
+
+        tcpip_message = self.tcpip(port)
+        addresses = self.device_wifi_addresses()
+        if not addresses:
+            raise AdbError("已切换到 TCP/IP 模式，但未探测到设备 Wi‑Fi IP。请确认手机与电脑在同一局域网。")
+
+        target = f"{addresses[0]}:{port}"
+        connect_message = self.connect(target)
+        message_parts = [part for part in (tcpip_message, connect_message) if part]
+        message = "\n".join(message_parts) if message_parts else f"已连接：{target}"
+        return target, message
 
     def _run_global(
         self,

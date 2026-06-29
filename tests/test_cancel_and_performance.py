@@ -251,6 +251,22 @@ def test_adb_connect_and_disconnect_use_global_adb_commands() -> None:
     ]
 
 
+def test_prepare_usb_device_for_wifi_switches_tcpip_and_connects(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = AdbClient.__new__(AdbClient)
+    client.adb_path = Path("adb")
+    client.serial = "USB123"
+
+    monkeypatch.setattr(AdbClient, "tcpip", lambda self, port=5555: f"restarting in TCP mode port: {port}")
+    monkeypatch.setattr(AdbClient, "device_wifi_addresses", lambda self: ["192.168.1.20"])
+    monkeypatch.setattr(AdbClient, "connect", lambda self, host_port: f"connected to {host_port}")
+
+    target, message = client.prepare_usb_device_for_wifi()
+
+    assert target == "192.168.1.20:5555"
+    assert "TCP mode" in message
+    assert "connected to 192.168.1.20:5555" in message
+
+
 def test_adb_pair_sends_pairing_code_via_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     from android_backup_desktop import adb as adb_module
 
@@ -412,6 +428,63 @@ def test_wifi_connect_controls_dispatch_background_worker(monkeypatch: pytest.Mo
 
     assert isinstance(captured["worker"], AdbConnectWorker)
     assert captured["worker"].host_port == "192.168.1.10:5555"
+    assert captured["run_slot"] == captured["worker"].run
+    window.close()
+
+
+def test_wifi_connect_normalizes_endpoint_before_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from android_backup_desktop.gui import AdbConnectWorker, MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(MainWindow, "refresh_devices", lambda _self: None)
+
+    def fake_start_worker(self: MainWindow, worker, run_slot) -> bool:
+        captured["worker"] = worker
+        captured["run_slot"] = run_slot
+        return True
+
+    monkeypatch.setattr(MainWindow, "start_worker", fake_start_worker)
+    window = MainWindow()
+    window.connect_target.setText("IP address & Port: 192.168.1.10:5555")
+    window.start_connect()
+
+    assert isinstance(captured["worker"], AdbConnectWorker)
+    assert captured["worker"].host_port == "192.168.1.10:5555"
+    assert window.connect_target.text() == "192.168.1.10:5555"
+    window.close()
+
+
+def test_wifi_connect_can_promote_usb_device_to_wifi(monkeypatch: pytest.MonkeyPatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from android_backup_desktop.gui import AdbSmartUsbConnectWorker, MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(MainWindow, "refresh_devices", lambda _self: None)
+    monkeypatch.setattr(MainWindow, "current_serial", lambda _self: "USB123")
+
+    def fake_start_worker(self: MainWindow, worker, run_slot) -> bool:
+        captured["worker"] = worker
+        captured["run_slot"] = run_slot
+        return True
+
+    monkeypatch.setattr(MainWindow, "start_worker", fake_start_worker)
+    window = MainWindow()
+    window.connect_target.setText("")
+    window.start_connect()
+
+    assert isinstance(captured["worker"], AdbSmartUsbConnectWorker)
+    assert captured["worker"].serial == "USB123"
     assert captured["run_slot"] == captured["worker"].run
     window.close()
 

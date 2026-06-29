@@ -1,5 +1,7 @@
 from android_backup_desktop.adb import (
     AdbClient,
+    extract_host_port,
+    parse_inet_addresses,
     parse_devices,
     parse_dumpsys_package,
     parse_package_lines,
@@ -94,3 +96,20 @@ def test_is_network_serial_distinguishes_wifi_from_usb_and_emulator() -> None:
     assert AdbClient.is_network_serial("host.local:37041") is True
     assert AdbClient.is_network_serial("R5GYC1RLKDP") is False
     assert AdbClient.is_network_serial("emulator-5554") is False
+
+
+def test_extract_host_port_accepts_labeled_or_multiline_input() -> None:
+    assert extract_host_port("IP address & Port: 192.168.1.8:37099") == "192.168.1.8:37099"
+    assert extract_host_port("192.168.1.8\n37099") == "192.168.1.8:37099"
+    assert extract_host_port("demo.local", default_port=5555) == "demo.local:5555"
+
+
+def test_parse_inet_addresses_ignores_loopback_and_deduplicates() -> None:
+    output = """
+    3: wlan0
+        inet 192.168.1.23/24 brd 192.168.1.255 scope global wlan0
+        inet 192.168.1.23/24 secondary scope global wlan0
+        inet 127.0.0.1/8 scope host lo
+    """
+
+    assert parse_inet_addresses(output) == ["192.168.1.23"]

@@ -86,6 +86,26 @@ class AdbConnectWorker(QObject):
             self.failed.emit(str(exc) or "无线连接失败。")
 
 
+class AdbSmartUsbConnectWorker(QObject):
+    finished = Signal(str, str)
+    failed = Signal(str)
+    log = Signal(str)
+
+    def __init__(self, adb_path: str, serial: str, port: int = 5555) -> None:
+        super().__init__()
+        self.adb_path = adb_path
+        self.serial = serial
+        self.port = port
+
+    def run(self) -> None:
+        try:
+            adb = AdbClient(self.adb_path, self.serial)
+            target, message = adb.prepare_usb_device_for_wifi(self.port)
+            self.finished.emit(target, message or f"已连接：{target}")
+        except Exception as exc:
+            self.failed.emit(str(exc) or "USB 转 Wi‑Fi 连接失败。")
+
+
 class AdbDisconnectWorker(QObject):
     finished = Signal(str)
     failed = Signal(str)
@@ -276,7 +296,7 @@ class MainWindow(QMainWindow):
         self.connect_target = QLineEdit()
         self.connect_target.setPlaceholderText("192.168.1.100:5555")
         self.pair_button = QPushButton("配对")
-        self.connect_button = QPushButton("连接")
+        self.connect_button = QPushButton("智能连接")
         self.disconnect_current_button = QPushButton("断开当前 Wi‑Fi")
         self.disconnect_all_button = QPushButton("断开全部 Wi‑Fi")
 
@@ -408,11 +428,12 @@ class MainWindow(QMainWindow):
             self.output_dir.setText(directory)
 
     def start_pair(self) -> None:
-        host_port = self.pair_host_port.text().strip()
+        host_port = AdbClient.normalize_host_port(self.pair_host_port.text(), default_port=None)
         pairing_code = self.pairing_code.text().strip()
         if not host_port or not pairing_code:
             self.show_error("请填写配对地址和配对码。")
             return
+        self.pair_host_port.setText(host_port)
         self.set_busy(True, "正在进行 Wi‑Fi 配对...")
         worker = AdbPairWorker(self.adb_path.text().strip() or "adb", host_port, pairing_code)
         if not self.start_worker(worker, worker.run):
@@ -429,20 +450,40 @@ class MainWindow(QMainWindow):
             self.connect_target.setText(f"{host}:5555")
 
     def start_connect(self) -> None:
-        host_port = self.connect_target.text().strip()
-        if not host_port:
-            self.show_error("请填写连接地址。")
+        host_port = AdbClient.normalize_host_port(self.connect_target.text(), default_port=5555)
+        if host_port:
+            self.connect_target.setText(host_port)
+            self.pending_device_serial = host_port
+            self.set_busy(True, "正在连接 Wi‑Fi 设备...")
+            worker = AdbConnectWorker(self.adb_path.text().strip() or "adb", host_port)
+            if not self.start_worker(worker, worker.run):
+                return
+            worker.finished.connect(self.on_connect_finished)
+            worker.failed.connect(self.on_worker_failed)
+            self.begin_worker()
             return
-        self.pending_device_serial = host_port
-        self.set_busy(True, "正在连接 Wi‑Fi 设备...")
-        worker = AdbConnectWorker(self.adb_path.text().strip() or "adb", host_port)
-        if not self.start_worker(worker, worker.run):
+
+        serial = self.current_serial()
+        if serial and not AdbClient.is_network_serial(serial):
+            self.pending_device_serial = ""
+            self.set_busy(True, "正在将 USB 设备切换为 Wi‑Fi 调试...")
+            worker = AdbSmartUsbConnectWorker(self.adb_path.text().strip() or "adb", serial)
+            if not self.start_worker(worker, worker.run):
+                return
+            worker.finished.connect(self.on_smart_usb_connect_finished)
+            worker.failed.connect(self.on_worker_failed)
+            self.begin_worker()
             return
-        worker.finished.connect(self.on_connect_finished)
-        worker.failed.connect(self.on_worker_failed)
-        self.begin_worker()
+
+        self.show_error("请填写连接地址，或先选择一台 USB 设备以自动切换到 Wi‑Fi 调试。")
 
     def on_connect_finished(self, message: str) -> None:
+        self.log(message)
+        self.refresh_devices()
+
+    def on_smart_usb_connect_finished(self, target: str, message: str) -> None:
+        self.connect_target.setText(target)
+        self.pending_device_serial = target
         self.log(message)
         self.refresh_devices()
 
