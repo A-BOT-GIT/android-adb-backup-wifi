@@ -500,7 +500,9 @@ class MainWindow(QMainWindow):
         self.set_busy(False, f"找到 {len(self.devices)} 台设备。")
 
     def device_display_name(self, device: Device) -> str:
-        transport = "Wi‑Fi" if AdbClient.is_network_serial(device.serial) else "USB"
+        is_network_serial = getattr(AdbClient, "is_network_serial", None)
+        is_wifi = is_network_serial(device.serial) if callable(is_network_serial) else (":" in device.serial)
+        transport = "Wi‑Fi" if is_wifi else "USB"
         if device.description:
             return f"{device.serial} [{transport}] ({device.description})"
         return f"{device.serial} [{transport}/{device.state}]"
